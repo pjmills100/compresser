@@ -34,6 +34,134 @@ document.querySelectorAll('.converter-card').forEach(card => {
 // COMPRESS TAB
 // ════════════════════════════════════════════════
 
+// ── Compress mode toggle (Files / Folder) ────────────────────────────────────
+
+let compressMode = 'files';
+
+document.getElementById('modeFiles').addEventListener('click', () => setCompressMode('files'));
+document.getElementById('modeFolder').addEventListener('click', () => setCompressMode('folder'));
+
+function setCompressMode(mode) {
+  compressMode = mode;
+  document.getElementById('modeFiles').classList.toggle('active', mode === 'files');
+  document.getElementById('modeFolder').classList.toggle('active', mode === 'folder');
+  document.getElementById('compressDropZone').style.display = mode === 'files' ? '' : 'none';
+  document.getElementById('folderDropZone').style.display  = mode === 'folder' ? '' : 'none';
+  // Reset both queues/results when switching
+  compressFiles = [];
+  renderCompressQueue();
+  crs.style.display = 'none';
+}
+
+// Folder input
+document.getElementById('folderInput').addEventListener('change', function() {
+  if (!this.files.length) return;
+  handleFolderFiles([...this.files]);
+  this.value = '';
+});
+
+// Folder drag & drop
+const fdz = document.getElementById('folderDropZone');
+fdz.addEventListener('dragover', e => { e.preventDefault(); fdz.classList.add('over'); });
+['dragleave','dragend'].forEach(ev => fdz.addEventListener(ev, () => fdz.classList.remove('over')));
+fdz.addEventListener('drop', e => {
+  e.preventDefault(); fdz.classList.remove('over');
+  // Try to get files from dataTransfer (works for folders dropped in browser)
+  const items = [...(e.dataTransfer.items || [])];
+  const fileEntries = [];
+  let pending = 0;
+  const collected = [];
+  if (items.length && items[0].webkitGetAsEntry) {
+    items.forEach(item => {
+      const entry = item.webkitGetAsEntry();
+      if (!entry) return;
+      pending++;
+      readEntry(entry, '', () => { pending--; if (pending === 0) handleFolderFiles(collected); });
+    });
+    function readEntry(entry, path, done) {
+      if (entry.isFile) {
+        entry.file(f => { Object.defineProperty(f, 'relativePath', { value: path + f.name }); collected.push(f); done(); });
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const readAll = () => reader.readEntries(entries => {
+          if (!entries.length) { done(); return; }
+          let sub = entries.length;
+          entries.forEach(e => readEntry(e, path + entry.name + '/', () => { sub--; if (!sub) readAll(); }));
+        });
+        readAll();
+      } else done();
+    }
+  } else {
+    // Fallback: flat file list from drag
+    handleFolderFiles([...e.dataTransfer.files]);
+  }
+});
+fdz.addEventListener('click', e => { if (!e.target.closest('label')) document.getElementById('folderInput').click(); });
+
+async function handleFolderFiles(files) {
+  if (!files.length) return;
+  // Show queue
+  cqs.style.display = 'flex';
+  cqc.textContent = files.length;
+  cfl.innerHTML = '';
+  // Preview list
+  const folderName = (files[0].webkitRelativePath || files[0].relativePath || files[0].name).split('/')[0] || 'folder';
+  const header = document.createElement('div');
+  header.className = 'file-row';
+  header.style.background = 'var(--surface-2)';
+  header.innerHTML = `
+    <div class="file-thumb zip" style="flex-shrink:0">ZIP</div>
+    <div class="file-info">
+      <span class="file-name">${esc(folderName)}.zip</span>
+      <span class="file-meta">${files.length} file${files.length!==1?'s':''} will be bundled</span>
+    </div>`;
+  cfl.appendChild(header);
+
+  // Action buttons
+  document.getElementById('compressAllBtn').onclick = async () => {
+    document.getElementById('compressAllBtn').disabled = true;
+    document.getElementById('compressAllBtn').textContent = 'Zipping…';
+    crs.style.display = 'flex'; crs.style.flexDirection = 'column'; crs.style.gap = '10px';
+    csg.innerHTML = '';
+    crl.innerHTML = `<div class="loading-row"><div class="spinner"></div>Bundling ${files.length} files into ZIP…</div>`;
+
+    const zip = new JSZip();
+    let totalSize = 0;
+    for (const f of files) {
+      const rel = f.webkitRelativePath || f.relativePath || f.name;
+      zip.file(rel, await f.arrayBuffer());
+      totalSize += f.size;
+    }
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
+    const saved = totalSize - blob.size;
+    const pct = totalSize > 0 ? Math.round((saved / totalSize) * 100) : 0;
+    csg.innerHTML = `
+      <div class="stat"><span class="stat-v">${fmtBytes(totalSize)}</span><span class="stat-l">Original</span></div>
+      <div class="stat"><span class="stat-v">${fmtBytes(blob.size)}</span><span class="stat-l">ZIP size</span></div>
+      <div class="stat"><span class="stat-v">${fmtBytes(Math.abs(saved))}</span><span class="stat-l">Saved</span></div>
+      <div class="stat"><span class="stat-v">${pct}%</span><span class="stat-l">Reduction</span></div>`;
+    const url = URL.createObjectURL(blob);
+    crl.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    row.innerHTML = `
+      <div class="file-thumb zip" style="flex-shrink:0">ZIP</div>
+      <div class="file-info" style="flex:1;min-width:0">
+        <span class="file-name">${esc(folderName)}.zip</span>
+        <span class="file-meta">${fmtBytes(blob.size)} <span class="badge">${files.length} files · -${pct}%</span></span>
+      </div>
+      <a class="dl-btn" href="${url}" download="${esc(folderName)}.zip">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M6 8l-3-3M6 8l3-3M1 11h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Download ZIP
+      </a>`;
+    crl.appendChild(row);
+    document.getElementById('compressAllBtn').disabled = false;
+    document.getElementById('compressAllBtn').textContent = 'Compress all';
+  };
+}
+
+// ── Compress files ────────────────────────────────────────────────────────────
+
 const cdz  = document.getElementById('compressDropZone');
 const cfi  = document.getElementById('compressFileInput');
 const cqs  = document.getElementById('compressQueue');
@@ -97,9 +225,15 @@ function renderCompressQueue() {
   });
 }
 
-ccl.addEventListener('click', () => { compressFiles = []; renderCompressQueue(); crs.style.display = 'none'; });
+ccl.addEventListener('click', () => {
+  compressFiles = [];
+  renderCompressQueue();
+  crs.style.display = 'none';
+  // restore default files-mode handler in case folder mode overwrote it
+  cab.onclick = null;
+});
 
-cab.addEventListener('click', async () => {
+async function compressAllHandler() {
   if (!compressFiles.length) return;
   cab.disabled = true; cab.textContent = 'Working…';
   crs.style.display = 'flex'; crs.style.flexDirection = 'column'; crs.style.gap = '10px';
@@ -109,7 +243,8 @@ cab.addEventListener('click', async () => {
   for (const { file } of compressFiles) results.push(await compressFile(file));
   renderCompressResults(results);
   cab.disabled = false; cab.textContent = 'Compress all';
-});
+}
+cab.addEventListener('click', compressAllHandler);
 
 async function compressFile(file) {
   const ext = getExt(file.name).toLowerCase();
