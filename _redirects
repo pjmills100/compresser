@@ -1,0 +1,5 @@
+# Cloudflare Pages redirects
+# Format: /old-path /new-path [status-code]
+
+# SPA fallback (not needed for static sites, but useful if you add routing)
+# /* /index.html 200
